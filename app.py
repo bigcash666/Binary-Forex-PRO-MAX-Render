@@ -57,4 +57,4 @@ def has_high_impact_news(pair):
     
     for ev in news_cache:
         try:
-            dt = datetime.strptime(ev['date'] + " " + ev.
+            dt = datetime.strptime(ev['date'] + " " + ev.get('time', '00:00'), "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
