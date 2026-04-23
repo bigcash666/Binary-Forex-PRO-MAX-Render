@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 st.set_page_config(page_title="Binary Forex PRO MAX", layout="wide", page_icon="📈")
 
 st.title("📈 Binary Forex Tracker PRO MAX v3 — Render Edition")
-st.markdown("**RSI + MACD + Stochastic + ADX + Bollinger Bands + News Filter** • Сигналы в Telegram 24/7")
+st.markdown("**RSI + MACD + Stochastic + ADX + Bollinger + News Filter** • Сигналы в Telegram 24/7")
 
 # ==================== НАСТРОЙКИ ====================
 if "bot_token" not in st.session_state:
@@ -22,6 +22,11 @@ DEFAULT_PAIRS = {
 }
 
 news_cache = []
+
+# ==================== HEADERS ДЛЯ YAHOO ====================
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+}
 
 # ==================== TELEGRAM ====================
 def send_telegram(message):
@@ -64,7 +69,7 @@ def has_high_impact_news(pair):
             continue
     return False, ""
 
-# ==================== ИНДИКАТОРЫ ====================
+# ==================== ИНДИКАТОРЫ (без изменений) ====================
 def calculate_rsi(closes):
     if len(closes) < 15: return 50.0
     gains = losses = 0.0
@@ -128,27 +133,36 @@ def calculate_bollinger(closes, period=20, std_mult=2):
     std = (sum((x - sma)**2 for x in closes[-period:]) / period) ** 0.5
     return sma, sma + std_mult*std, sma - std_mult*std
 
-# ==================== ОСНОВНАЯ ФУНКЦИЯ (ИСПРАВЛЕНА) ====================
+# ==================== ЗАГРУЗКА ДАННЫХ ====================
 def fetch_pair_data(ticker, tf):
-    pair_name = ticker.replace("=X", "").replace("=F", "")  # Значение по умолчанию
+    pair_name = ticker.replace("=X", "").replace("=F", "")
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval={tf}&range=10d"
-        data = requests.get(url, timeout=12).json()
-        quotes = data["chart"]["result"][0]["indicators"]["quote"][0]
-        closes = quotes["close"][-350:]
-        highs = quotes["high"][-350:]
-        lows = quotes["low"][-350:]
-        if len(closes) < 200:
-            return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", "Рекомендация": "Мало данных"}
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        data = resp.json()
+
+        result = data.get("chart", {}).get("result")
+        if not result or len(result) == 0:
+            return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", "Рекомендация": "Нет данных от Yahoo"}
+
+        quotes = result[0]["indicators"]["quote"][0]
+        closes = quotes.get("close", [])[-350:]
+        highs = quotes.get("high", [])[-350:]
+        lows = quotes.get("low", [])[-350:]
+
+        if len(closes) < 100:
+            return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", "Рекомендация": "Мало свечей"}
 
         price = round(closes[-1], 4)
         pair_name = next((k for k, v in DEFAULT_PAIRS.items() if v == ticker), pair_name)
 
+        # Новости
         has_news, news_title = has_high_impact_news(pair_name)
         if has_news:
             return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "🟥 BLOCKED", "Сила": "NEWS", 
                     "Рекомендация": news_title[:60]}
 
+        # Индикаторы
         rsi = calculate_rsi(closes)
         macd_line, sig_line = calculate_macd_lines(closes)
         macd_cross_bull = macd_line[-2] <= sig_line[-2] and macd_line[-1] > sig_line[-1]
@@ -165,7 +179,7 @@ def fetch_pair_data(ticker, tf):
 
         adx = calculate_adx(highs, lows, closes)
         _, bb_up, bb_low = calculate_bollinger(closes)
-        bb_pos = "Lower" if price <= bb_low*1.001 else "Upper" if price >= bb_up*0.999 else "Middle"
+        bb_pos = "Lower" if price <= bb_low * 1.001 else "Upper" if price >= bb_up * 0.999 else "Middle"
 
         strong_call = rsi < 30 and macd_cross_bull and trend_up and stoch_oversold and stoch_cross_up and adx > 22 and bb_pos == "Lower"
         strong_put = rsi > 70 and macd_cross_bear and trend_down and stoch_overbought and adx > 22 and bb_pos == "Upper"
@@ -173,38 +187,38 @@ def fetch_pair_data(ticker, tf):
         if strong_call:
             send_telegram(f"🔥 <b>MAX CALL</b> {pair_name} {tf}\nЦена: {price} | ADX: {adx:.1f}")
             return {"Пара": pair_name, "ТФ": tf, "Цена": price, "RSI": round(rsi,1), "ADX": round(adx,1), 
-                    "BB": bb_pos, "Сигнал": "✅ CALL", "Сила": "MAX", "Рекомендация": "Открывай CALL 3-5 мин"}
+                    "BB": bb_pos, "Сигнал": "✅ CALL", "Сила": "MAX", "Рекомендация": "Открывай CALL"}
         elif strong_put:
             send_telegram(f"🔥 <b>MAX PUT</b> {pair_name} {tf}\nЦена: {price} | ADX: {adx:.1f}")
             return {"Пара": pair_name, "ТФ": tf, "Цена": price, "RSI": round(rsi,1), "ADX": round(adx,1), 
-                    "BB": bb_pos, "Сигнал": "❌ PUT", "Сила": "MAX", "Рекомендация": "Открывай PUT 3-5 мин"}
+                    "BB": bb_pos, "Сигнал": "❌ PUT", "Сила": "MAX", "Рекомендация": "Открывай PUT"}
         else:
             return {"Пара": pair_name, "ТФ": tf, "Цена": price, "RSI": round(rsi,1), "ADX": round(adx,1), 
                     "BB": bb_pos, "Сигнал": "NEUTRAL", "Сила": "—", "Рекомендация": "Жди сигнала"}
 
-    except Exception:
+    except Exception as e:
         return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", 
-                "Рекомендация": "Ошибка загрузки данных"}
+                "Рекомендация": f"Ошибка: {str(e)[:80]}"}
 
 # ==================== ИНТЕРФЕЙС ====================
 with st.sidebar:
-    st.header("⚙ Telegram Настройки")
+    st.header("⚙ Telegram")
     st.session_state.bot_token = st.text_input("Bot Token", value=st.session_state.bot_token, type="password")
     st.session_state.chat_id = st.text_input("Chat ID", value=st.session_state.chat_id)
-    if st.button("💾 Сохранить настройки"):
-        st.success("✅ Настройки сохранены!")
+    if st.button("💾 Сохранить"):
+        st.success("✅ Сохранено!")
 
     st.header("🔄 Обновление")
-    refresh = st.slider("Интервал обновления (сек)", 30, 120, 45)
+    refresh = st.slider("Интервал (сек)", 30, 120, 45)
 
 load_news()
 
 if st.button("🔄 Обновить сейчас"):
     st.rerun()
 
-# ==================== ТАБЛИЦА ====================
+# Таблица
 data_rows = []
-for name, ticker in DEFAULT_PAIRS.items():
+for ticker in DEFAULT_PAIRS.values():
     for tf in ["5m", "15m", "30m"]:
         row = fetch_pair_data(ticker, tf)
         if row:
@@ -213,8 +227,7 @@ for name, ticker in DEFAULT_PAIRS.items():
 df = pd.DataFrame(data_rows)
 st.dataframe(df, use_container_width=True, hide_index=True)
 
-st.caption(f"Последнее обновление: {datetime.now().strftime('%H:%M:%S')} • Работает 24/7 на Render.com")
+st.caption(f"Последнее обновление: {datetime.now().strftime('%H:%M:%S')} • Render 24/7")
 
-# Автообновление
 time.sleep(refresh)
 st.rerun()
