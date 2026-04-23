@@ -2,18 +2,23 @@ import streamlit as st
 import requests
 import pandas as pd
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 st.set_page_config(page_title="Binary Forex PRO MAX", layout="wide", page_icon="📈")
 
 st.title("📈 Binary Forex Tracker PRO MAX v3")
-st.markdown("**Полная стратегия:** RSI + MACD + Stochastic + ADX + Bollinger Bands + News Filter")
+st.markdown("**RSI + MACD + Stochastic + ADX + Bollinger + News Filter** • Статистика сигналов")
 
-# ==================== НАСТРОЙКИ ====================
+# ==================== СЕССИЯ ====================
 if "bot_token" not in st.session_state:
     st.session_state.bot_token = ""
 if "chat_id" not in st.session_state:
     st.session_state.chat_id = ""
+
+if "signal_stats" not in st.session_state:
+    st.session_state.signal_stats = {"CALL": 0, "PUT": 0, "BLOCKED": 0, "total": 0}
+if "signal_log" not in st.session_state:
+    st.session_state.signal_log = []
 
 DEFAULT_PAIRS = {
     "EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X",
@@ -122,7 +127,7 @@ def calculate_adx(highs, lows, closes, period=14):
     lows = clean_data(lows)
     closes = clean_data(closes)
     tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(1, len(highs))]
-    atr = sum(tr[-period:]) / period
+    atr = sum(tr[-period:]) / period if tr else 0
     plus_dm = [max(highs[i]-highs[i-1], 0) if highs[i]-highs[i-1] > lows[i-1]-lows[i] else 0 for i in range(1, len(highs))]
     minus_dm = [max(lows[i-1]-lows[i], 0) if lows[i-1]-lows[i] > highs[i]-highs[i-1] else 0 for i in range(1, len(highs))]
     plus_di = 100 * (sum(plus_dm[-period:]) / period) / atr if atr != 0 else 0
@@ -158,6 +163,8 @@ def fetch_pair_data(ticker, tf):
 
         has_news, news_title = has_high_impact_news(pair_name)
         if has_news:
+            st.session_state.signal_stats["BLOCKED"] += 1
+            st.session_state.signal_stats["total"] += 1
             return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "🟥 BLOCKED", "Сила": "NEWS", "Рекомендация": news_title[:50]}
 
         rsi = calculate_rsi(closes)
@@ -170,30 +177,64 @@ def fetch_pair_data(ticker, tf):
         trend_down = closes[-1] < ema200
 
         stoch_k, stoch_d, stoch_prev = calculate_stochastic(highs, lows, closes)
-        stoch_oversold = stoch_k < 22 and stoch_d < 22
-        stoch_overbought = stoch_k > 78 and stoch_d > 78
+        stoch_oversold = stoch_k < 28 and stoch_d < 28
+        stoch_overbought = stoch_k > 72 and stoch_d > 72
         stoch_cross_up = stoch_prev <= stoch_d and stoch_k > stoch_d
+        stoch_cross_down = stoch_prev >= stoch_d and stoch_k < stoch_d
 
         adx = calculate_adx(highs, lows, closes)
         _, bb_up, bb_low = calculate_bollinger(closes)
-        bb_pos = "Lower" if price <= bb_low*1.001 else "Upper" if price >= bb_up*0.999 else "Middle"
+        bb_pos = "Lower" if price <= bb_low*1.002 else "Upper" if price >= bb_up*0.998 else "Middle"
 
-        strong_call = rsi < 30 and macd_cross_bull and trend_up and stoch_oversold and stoch_cross_up and adx > 22 and bb_pos == "Lower"
-        strong_put = rsi > 70 and macd_cross_bear and trend_down and stoch_overbought and adx > 22 and bb_pos == "Upper"
+        strong_call = (rsi < 35 and macd_cross_bull and trend_up and stoch_oversold and stoch_cross_up and adx > 18 and bb_pos in ["Lower", "Middle"])
+        strong_put = (rsi > 65 and macd_cross_bear and trend_down and stoch_overbought and stoch_cross_down and adx > 18 and bb_pos in ["Upper", "Middle"])
 
         if strong_call:
-            send_telegram(f"🔥 <b>MAX CALL</b> {pair_name} {tf}\nЦена: {price} | RSI: {rsi:.1f} | ADX: {adx:.1f}")
-            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "✅ CALL", "Сила": "MAX", "Рекомендация": "Открывай CALL"}
+            st.session_state.signal_stats["CALL"] += 1
+            st.session_state.signal_stats["total"] += 1
+            st.session_state.signal_log.append(f"[{datetime.now().strftime('%H:%M')}] {pair_name} {tf} → ✅ CALL")
+            send_telegram(f"🔥 <b>CALL</b> {pair_name} {tf}\nЦена: {price} | RSI: {rsi:.1f}")
+            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "✅ CALL", "Сила": "GOOD", "Рекомендация": "Открывай CALL"}
         elif strong_put:
-            send_telegram(f"🔥 <b>MAX PUT</b> {pair_name} {tf}\nЦена: {price} | RSI: {rsi:.1f} | ADX: {adx:.1f}")
-            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "❌ PUT", "Сила": "MAX", "Рекомендация": "Открывай PUT"}
+            st.session_state.signal_stats["PUT"] += 1
+            st.session_state.signal_stats["total"] += 1
+            st.session_state.signal_log.append(f"[{datetime.now().strftime('%H:%M')}] {pair_name} {tf} → ❌ PUT")
+            send_telegram(f"🔥 <b>PUT</b> {pair_name} {tf}\nЦена: {price} | RSI: {rsi:.1f}")
+            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "❌ PUT", "Сила": "GOOD", "Рекомендация": "Открывай PUT"}
         else:
-            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "NEUTRAL", "Сила": "—", "Рекомендация": "Жди сигнала"}
+            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "NEUTRAL", "Сила": "—", "Рекомендация": f"RSI {rsi:.1f} | ADX {adx:.1f}"}
 
     except Exception as e:
         return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", "Рекомендация": str(e)[:60]}
 
 # ==================== ИНТЕРФЕЙС ====================
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    st.subheader("📊 Статистика сигналов за сегодня")
+    stats = st.session_state.signal_stats
+    total = stats["total"]
+    call_pct = round(stats["CALL"] / total * 100, 1) if total > 0 else 0
+    put_pct = round(stats["PUT"] / total * 100, 1) if total > 0 else 0
+
+    st.metric("✅ CALL", stats["CALL"], f"{call_pct}%")
+    st.metric("❌ PUT", stats["PUT"], f"{put_pct}%")
+    st.metric("🟥 BLOCKED", stats["BLOCKED"])
+    st.metric("Всего сигналов", total)
+
+with col2:
+    if st.button("🔄 Сбросить статистику"):
+        st.session_state.signal_stats = {"CALL": 0, "PUT": 0, "BLOCKED": 0, "total": 0}
+        st.session_state.signal_log = []
+        st.success("Статистика сброшена!")
+
+st.subheader("📜 Последние сигналы")
+if st.session_state.signal_log:
+    for log_entry in reversed(st.session_state.signal_log[-20:]):
+        st.write(log_entry)
+else:
+    st.info("Сигналы ещё не появлялись")
+
 with st.sidebar:
     st.header("⚙ Telegram")
     st.session_state.bot_token = st.text_input("Bot Token", value=st.session_state.bot_token, type="password")
