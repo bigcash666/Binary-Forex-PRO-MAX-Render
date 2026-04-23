@@ -109,4 +109,25 @@ with st.sidebar:
     if st.button("💾 Сохранить"):
         st.success("✅ Сохранено!")
 
-    refresh = st.slider
+    refresh = st.slider("Интервал обновления (сек)", 30, 180, 60)
+
+load_news()
+
+if st.button("🔄 Обновить сейчас"):
+    st.rerun()
+
+# ==================== ТАБЛИЦА ====================
+data_rows = []
+for ticker in DEFAULT_PAIRS.values():
+    for tf in ["5m", "15m", "30m"]:
+        row = fetch_pair_data(ticker, tf)
+        if row:
+            data_rows.append(row)
+
+df = pd.DataFrame(data_rows)
+st.dataframe(df, use_container_width=True, hide_index=True)
+
+st.caption(f"Последнее обновление: {datetime.now().strftime('%H:%M:%S')} • Render 24/7")
+
+time.sleep(refresh)
+st.rerun()
