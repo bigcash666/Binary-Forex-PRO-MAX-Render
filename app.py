@@ -98,4 +98,127 @@ def calculate_ema(data, period):
 
 def calculate_macd_lines(closes):
     ema12 = calculate_ema(closes, 12)
-    ema26 =
+    ema26 = calculate_ema(closes, 26)
+    macd_line = [ema12[i] - ema26[i] for i in range(len(ema12))]
+    signal_line = calculate_ema(macd_line, 9)
+    return macd_line, signal_line
+
+def calculate_stochastic(highs, lows, closes):
+    closes = clean_data(closes)
+    if len(closes) < 20: return 50, 50, 50
+    k_values = []
+    for i in range(13, len(closes)):
+        ll = min(clean_data(lows[i-13:i+1]))
+        hh = max(clean_data(highs[i-13:i+1]))
+        k = 100 * (closes[i] - ll) / (hh - ll) if hh != ll else 50
+        k_values.append(k)
+    k_smooth = sum(k_values[-3:]) / 3
+    d = sum(k_values[-6:-3]) / 3 if len(k_values) > 5 else k_smooth
+    return k_smooth, d, k_values[-4] if len(k_values) > 3 else k_smooth
+
+def calculate_adx(highs, lows, closes, period=14):
+    if len(highs) < period + 10: return 20.0
+    highs = clean_data(highs)
+    lows = clean_data(lows)
+    closes = clean_data(closes)
+    tr = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(1, len(highs))]
+    atr = sum(tr[-period:]) / period
+    plus_dm = [max(highs[i]-highs[i-1], 0) if highs[i]-highs[i-1] > lows[i-1]-lows[i] else 0 for i in range(1, len(highs))]
+    minus_dm = [max(lows[i-1]-lows[i], 0) if lows[i-1]-lows[i] > highs[i]-highs[i-1] else 0 for i in range(1, len(highs))]
+    plus_di = 100 * (sum(plus_dm[-period:]) / period) / atr if atr != 0 else 0
+    minus_di = 100 * (sum(minus_dm[-period:]) / period) / atr if atr != 0 else 0
+    dx = abs(plus_di - minus_di) / (plus_di + minus_di + 0.0001) * 100
+    return dx
+
+def calculate_bollinger(closes, period=20, std_mult=2):
+    closes = clean_data(closes)
+    if len(closes) < period:
+        return closes[-1] if closes else 0, closes[-1] if closes else 0, closes[-1] if closes else 0
+    sma = sum(closes[-period:]) / period
+    std = (sum((x - sma)**2 for x in closes[-period:]) / period) ** 0.5
+    return sma, sma + std_mult*std, sma - std_mult*std
+
+# ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
+def fetch_pair_data(ticker, tf):
+    pair_name = ticker.replace("=X", "").replace("=F", "")
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval={tf}&range=10d"
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        data = resp.json()
+
+        quotes = data["chart"]["result"][0]["indicators"]["quote"][0]
+        closes = clean_data(quotes.get("close", []))[-300:]
+        highs = clean_data(quotes.get("high", []))[-300:]
+        lows = clean_data(quotes.get("low", []))[-300:]
+
+        if len(closes) < 80:
+            return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", "Рекомендация": "Мало данных"}
+
+        price = round(closes[-1], 4)
+
+        has_news, news_title = has_high_impact_news(pair_name)
+        if has_news:
+            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "🟥 BLOCKED", "Сила": "NEWS", "Рекомендация": news_title[:50]}
+
+        rsi = calculate_rsi(closes)
+        macd_line, sig_line = calculate_macd_lines(closes)
+        macd_cross_bull = macd_line[-2] <= sig_line[-2] and macd_line[-1] > sig_line[-1]
+        macd_cross_bear = macd_line[-2] >= sig_line[-2] and macd_line[-1] < sig_line[-1]
+
+        ema200 = calculate_ema(closes, 200)[-1]
+        trend_up = closes[-1] > ema200
+        trend_down = closes[-1] < ema200
+
+        stoch_k, stoch_d, stoch_prev = calculate_stochastic(highs, lows, closes)
+        stoch_oversold = stoch_k < 22 and stoch_d < 22
+        stoch_overbought = stoch_k > 78 and stoch_d > 78
+        stoch_cross_up = stoch_prev <= stoch_d and stoch_k > stoch_d
+
+        adx = calculate_adx(highs, lows, closes)
+        _, bb_up, bb_low = calculate_bollinger(closes)
+        bb_pos = "Lower" if price <= bb_low*1.001 else "Upper" if price >= bb_up*0.999 else "Middle"
+
+        strong_call = rsi < 30 and macd_cross_bull and trend_up and stoch_oversold and stoch_cross_up and adx > 22 and bb_pos == "Lower"
+        strong_put = rsi > 70 and macd_cross_bear and trend_down and stoch_overbought and adx > 22 and bb_pos == "Upper"
+
+        if strong_call:
+            send_telegram(f"🔥 <b>MAX CALL</b> {pair_name} {tf}\nЦена: {price} | RSI: {rsi:.1f} | ADX: {adx:.1f}")
+            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "✅ CALL", "Сила": "MAX", "Рекомендация": "Открывай CALL"}
+        elif strong_put:
+            send_telegram(f"🔥 <b>MAX PUT</b> {pair_name} {tf}\nЦена: {price} | RSI: {rsi:.1f} | ADX: {adx:.1f}")
+            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "❌ PUT", "Сила": "MAX", "Рекомендация": "Открывай PUT"}
+        else:
+            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "NEUTRAL", "Сила": "—", "Рекомендация": "Жди сигнала"}
+
+    except Exception as e:
+        return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", "Рекомендация": str(e)[:60]}
+
+# ==================== ИНТЕРФЕЙС ====================
+with st.sidebar:
+    st.header("⚙ Telegram")
+    st.session_state.bot_token = st.text_input("Bot Token", value=st.session_state.bot_token, type="password")
+    st.session_state.chat_id = st.text_input("Chat ID", value=st.session_state.chat_id)
+    if st.button("💾 Сохранить"):
+        st.success("✅ Сохранено!")
+
+    refresh = st.slider("Интервал обновления (сек)", 30, 180, 60)
+
+load_news()
+
+if st.button("🔄 Обновить сейчас"):
+    st.rerun()
+
+data_rows = []
+for ticker in DEFAULT_PAIRS.values():
+    for tf in ["5m", "15m", "30m"]:
+        row = fetch_pair_data(ticker, tf)
+        if row:
+            data_rows.append(row)
+
+df = pd.DataFrame(data_rows)
+st.dataframe(df, use_container_width=True, hide_index=True)
+
+st.caption(f"Последнее обновление: {datetime.now().strftime('%H:%M:%S')}")
+
+time.sleep(refresh)
+st.rerun()
