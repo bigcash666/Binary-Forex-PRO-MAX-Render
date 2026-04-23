@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 st.set_page_config(page_title="Binary Forex PRO MAX", layout="wide", page_icon="📈")
 
 st.title("📈 Binary Forex Tracker PRO MAX v3")
-st.markdown("**RSI + MACD + Stochastic + ADX + Bollinger + News Filter** • 24/7")
+st.markdown("**Полная стратегия:** RSI + MACD + Stochastic + ADX + Bollinger Bands + News Filter")
 
 # ==================== НАСТРОЙКИ ====================
 if "bot_token" not in st.session_state:
@@ -23,11 +23,8 @@ DEFAULT_PAIRS = {
 
 news_cache = []
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-# ==================== TELEGRAM ====================
 def send_telegram(message):
     token = st.session_state.bot_token
     chat_id = st.session_state.chat_id
@@ -38,7 +35,6 @@ def send_telegram(message):
         except:
             pass
 
-# ==================== НОВОСТИ ====================
 def load_news():
     global news_cache
     try:
@@ -56,7 +52,6 @@ def has_high_impact_news(pair):
         "NZD/USD": ["NZD","USD"], "EUR/JPY": ["EUR","JPY"], "XAU/USD": ["USD"]
     }
     currencies = pair_map.get(pair, ["USD"])
-    
     for ev in news_cache:
         try:
             dt = datetime.strptime(ev['date'] + " " + ev.get('time','00:00'), "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
@@ -68,66 +63,39 @@ def has_high_impact_news(pair):
             continue
     return False, ""
 
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def clean_data(data):
     return [x for x in data if x is not None]
 
-# ==================== fetch_pair_data (исправленная) ====================
-def fetch_pair_data(ticker, tf):
-    pair_name = ticker.replace("=X", "").replace("=F", "")
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval={tf}&range=10d"
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        data = resp.json()
+# ==================== ИНДИКАТОРЫ ====================
+def calculate_rsi(closes):
+    closes = clean_data(closes)
+    if len(closes) < 15: return 50.0
+    gains = losses = 0.0
+    for i in range(1, 15):
+        change = closes[i] - closes[i-1]
+        if change > 0: gains += change
+        else: losses -= change
+    avg_gain = gains / 14
+    avg_loss = losses / 14
+    last = closes[-1] - closes[-2]
+    if last > 0:
+        avg_gain = (avg_gain * 13 + last) / 14
+        avg_loss = avg_loss * 13 / 14
+    else:
+        avg_gain = avg_gain * 13 / 14
+        avg_loss = (avg_loss * 13 + abs(last)) / 14
+    rs = avg_gain / avg_loss if avg_loss != 0 else 0
+    return 100 - (100 / (1 + rs))
 
-        quotes = data["chart"]["result"][0]["indicators"]["quote"][0]
-        closes = clean_data(quotes.get("close", []))[-300:]
+def calculate_ema(data, period):
+    data = clean_data(data)
+    if len(data) < period: return [data[-1]] * len(data) if data else [0]
+    k = 2 / (period + 1)
+    ema = [data[0]]
+    for i in range(1, len(data)):
+        ema.append(data[i] * k + ema[i-1] * (1 - k))
+    return ema
 
-        if len(closes) < 50:
-            return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", "Рекомендация": "Мало данных"}
-
-        price = round(closes[-1], 4)
-
-        has_news, news_title = has_high_impact_news(pair_name)
-        if has_news:
-            return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "🟥 BLOCKED", "Сила": "NEWS", 
-                    "Рекомендация": news_title[:55]}
-
-        # Простая версия для стабильности
-        return {"Пара": pair_name, "ТФ": tf, "Цена": price, "Сигнал": "NEUTRAL", "Сила": "—", 
-                "Рекомендация": "Данные получены"}
-
-    except Exception as e:
-        return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", 
-                "Рекомендация": str(e)[:70]}
-
-# ==================== ИНТЕРФЕЙС ====================
-with st.sidebar:
-    st.header("⚙ Telegram")
-    st.session_state.bot_token = st.text_input("Bot Token", value=st.session_state.bot_token, type="password")
-    st.session_state.chat_id = st.text_input("Chat ID", value=st.session_state.chat_id)
-    if st.button("💾 Сохранить"):
-        st.success("✅ Сохранено!")
-
-    refresh = st.slider("Интервал обновления (сек)", 30, 180, 60)
-
-load_news()
-
-if st.button("🔄 Обновить сейчас"):
-    st.rerun()
-
-# ==================== ТАБЛИЦА ====================
-data_rows = []
-for ticker in DEFAULT_PAIRS.values():
-    for tf in ["5m", "15m", "30m"]:
-        row = fetch_pair_data(ticker, tf)
-        if row:
-            data_rows.append(row)
-
-df = pd.DataFrame(data_rows)
-st.dataframe(df, use_container_width=True, hide_index=True)
-
-st.caption(f"Последнее обновление: {datetime.now().strftime('%H:%M:%S')} • Render 24/7")
-
-time.sleep(refresh)
-st.rerun()
+def calculate_macd_lines(closes):
+    ema12 = calculate_ema(closes, 12)
+    ema26 =
