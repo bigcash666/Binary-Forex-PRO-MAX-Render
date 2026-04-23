@@ -2,12 +2,12 @@ import streamlit as st
 import requests
 import pandas as pd
 import time
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 
 st.set_page_config(page_title="Binary Forex PRO MAX", layout="wide", page_icon="📈")
 
 st.title("📈 Binary Forex Tracker PRO MAX v3")
-st.markdown("**RSI + MACD + Stochastic + ADX + Bollinger + News Filter** • Статистика сигналов")
+st.markdown("**RSI + MACD + Stochastic + ADX + Bollinger + News Filter** • Статистика + Проверка Telegram")
 
 # ==================== СЕССИЯ ====================
 if "bot_token" not in st.session_state:
@@ -30,16 +30,31 @@ news_cache = []
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
+# ==================== TELEGRAM ====================
 def send_telegram(message):
     token = st.session_state.bot_token
     chat_id = st.session_state.chat_id
     if token and chat_id:
         try:
-            requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                          data={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=8)
+            response = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                     data={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=8)
+            return response.status_code == 200
         except:
-            pass
+            return False
+    return False
 
+def test_telegram():
+    if not st.session_state.bot_token or not st.session_state.chat_id:
+        st.error("❌ Не заполнены Bot Token или Chat ID")
+        return
+    
+    success = send_telegram("✅ <b>Тестовое сообщение</b>\nПроверка связи с Binary Forex PRO MAX\nВсё работает!")
+    if success:
+        st.success("✅ Сообщение успешно отправлено в Telegram!")
+    else:
+        st.error("❌ Не удалось отправить сообщение. Проверьте Token и Chat ID.")
+
+# ==================== НОВОСТИ ====================
 def load_news():
     global news_cache
     try:
@@ -208,10 +223,10 @@ def fetch_pair_data(ticker, tf):
         return {"Пара": pair_name, "ТФ": tf, "Цена": "-", "Сигнал": "ERROR", "Сила": "-", "Рекомендация": str(e)[:60]}
 
 # ==================== ИНТЕРФЕЙС ====================
-col1, col2 = st.columns([3, 1])
+col1, col2, col3 = st.columns([2.5, 2, 1])
 
 with col1:
-    st.subheader("📊 Статистика сигналов за сегодня")
+    st.subheader("📊 Статистика за сегодня")
     stats = st.session_state.signal_stats
     total = stats["total"]
     call_pct = round(stats["CALL"] / total * 100, 1) if total > 0 else 0
@@ -223,6 +238,11 @@ with col1:
     st.metric("Всего сигналов", total)
 
 with col2:
+    st.subheader("🔗 Проверка Telegram")
+    if st.button("📨 Проверить привязку Telegram", type="primary"):
+        test_telegram()
+
+with col3:
     if st.button("🔄 Сбросить статистику"):
         st.session_state.signal_stats = {"CALL": 0, "PUT": 0, "BLOCKED": 0, "total": 0}
         st.session_state.signal_log = []
@@ -233,20 +253,20 @@ if st.session_state.signal_log:
     for log_entry in reversed(st.session_state.signal_log[-20:]):
         st.write(log_entry)
 else:
-    st.info("Сигналы ещё не появлялись")
+    st.info("Сигналы пока не появлялись")
 
 with st.sidebar:
-    st.header("⚙ Telegram")
+    st.header("⚙ Настройки Telegram")
     st.session_state.bot_token = st.text_input("Bot Token", value=st.session_state.bot_token, type="password")
     st.session_state.chat_id = st.text_input("Chat ID", value=st.session_state.chat_id)
-    if st.button("💾 Сохранить"):
-        st.success("✅ Сохранено!")
+    if st.button("💾 Сохранить настройки"):
+        st.success("✅ Настройки сохранены!")
 
     refresh = st.slider("Интервал обновления (сек)", 30, 180, 60)
 
 load_news()
 
-if st.button("🔄 Обновить сейчас"):
+if st.button("🔄 Обновить данные сейчас"):
     st.rerun()
 
 data_rows = []
@@ -259,7 +279,7 @@ for ticker in DEFAULT_PAIRS.values():
 df = pd.DataFrame(data_rows)
 st.dataframe(df, use_container_width=True, hide_index=True)
 
-st.caption(f"Последнее обновление: {datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"Последнее обновление: {datetime.now().strftime('%H:%M:%S')} • Render 24/7")
 
 time.sleep(refresh)
 st.rerun()
